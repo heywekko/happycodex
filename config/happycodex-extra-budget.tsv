@@ -1,5 +1,5 @@
 # path	happycodex_blob
-AGENTS.md	6d9dbda467c68abc00ad9f50b146bc1604c7760b
+AGENTS.md	72bf1085a1f0793570db398f22d56350c3ac9690
 config/happyclaw-diff-budget.tsv	f325c7c7f15696ee9fdf5c7d657aec0f3e13967f
 config/happyclaw-route-allowlist.txt	99693097fe94110e44517b16ba88a33f493d2dd1
 container/agent-runner/src/codex-cli.ts	8e066dda8bb98dd48dc925066dca0c2973878e5a
