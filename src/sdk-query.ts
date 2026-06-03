@@ -65,8 +65,6 @@ async function spawnCodexQuery(options: {
     'exec',
     '--json',
     '--skip-git-repo-check',
-    '--ask-for-approval',
-    'never',
     '--sandbox',
     'read-only',
     '--cd',

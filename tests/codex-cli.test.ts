@@ -104,8 +104,6 @@ describe('Codex CLI adapter', () => {
       '--skip-git-repo-check',
       '--output-last-message',
       '/tmp/last-message.txt',
-      '--ask-for-approval',
-      'never',
       '--model',
       'gpt-5.5',
       '--config',
@@ -120,20 +118,34 @@ describe('Codex CLI adapter', () => {
     ]);
   });
 
-  test('allows overriding the non-interactive approval policy', () => {
+  test('builds resume args without new-run-only flags', () => {
     const args = buildCodexExecArgs(
       {
         prompt: 'hello',
         cwd: '/workspace',
         codexHome: '/runtime/.codex',
-        approvalPolicy: 'on-request',
+        sessionId: 'thread-existing',
+        model: 'gpt-5.5',
+        sandbox: 'read-only',
       },
       '/tmp/last-message.txt',
     );
 
-    const approvalIndex = args.indexOf('--ask-for-approval');
-    expect(approvalIndex).toBeGreaterThan(-1);
-    expect(args[approvalIndex + 1]).toBe('on-request');
+    expect(args).toEqual([
+      'exec',
+      'resume',
+      '--json',
+      '--skip-git-repo-check',
+      '--output-last-message',
+      '/tmp/last-message.txt',
+      '--model',
+      'gpt-5.5',
+      'thread-existing',
+      '-',
+    ]);
+    expect(args).not.toContain('--ask-for-approval');
+    expect(args).not.toContain('--sandbox');
+    expect(args).not.toContain('--cd');
   });
 
   test('parses JSONL object lines', () => {
@@ -180,7 +192,6 @@ describe('Codex CLI adapter', () => {
       cwd: tmpRoot,
       codexHome: path.join(tmpRoot, '.codex'),
       sandbox: 'read-only',
-      approvalPolicy: 'never',
     });
 
     expect(result.exitCode).toBe(0);

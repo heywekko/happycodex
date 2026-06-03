@@ -93,10 +93,11 @@ describe('sdkQuery', () => {
     expect(result).not.toBeNull();
     const parsed = JSON.parse(result!);
     expect(parsed).toEqual({
-      args: expect.arrayContaining(['--ask-for-approval', 'never']),
+      args: expect.arrayContaining(['--sandbox', 'read-only']),
       codexHome: path.join(tmpRoot, 'sessions', 'team-a', '.codex'),
       prompt: 'hello',
     });
+    expect(parsed.args).not.toContain('--ask-for-approval');
     expect(
       fs.existsSync(path.join(tmpRoot, 'sessions', 'team-a', '.codex')),
     ).toBe(true);
@@ -114,10 +115,11 @@ describe('sdkQuery', () => {
     expect(result).not.toBeNull();
     const parsed = JSON.parse(result!);
     expect(parsed).toEqual({
-      args: expect.arrayContaining(['--ask-for-approval', 'never']),
+      args: expect.arrayContaining(['--sandbox', 'read-only']),
       codexHome: path.join(tmpRoot, 'sessions', 'main', '.codex'),
       prompt: 'legacy path',
     });
+    expect(parsed.args).not.toContain('--ask-for-approval');
   });
 
   test('uses user-level Codex install when service PATH omits it', async () => {

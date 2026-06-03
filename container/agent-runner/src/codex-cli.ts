@@ -12,7 +12,6 @@ export interface CodexExecOptions {
   codexBin?: string;
   model?: string;
   reasoningEffort?: string;
-  approvalPolicy?: 'untrusted' | 'on-request' | 'never';
   sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
   images?: string[];
   writableRoots?: string[];
@@ -144,8 +143,6 @@ export function buildCodexExecArgs(
     '--skip-git-repo-check',
     '--output-last-message',
     outputLastMessagePath,
-    '--ask-for-approval',
-    options.approvalPolicy ?? 'never',
   ];
 
   if (options.model) {
