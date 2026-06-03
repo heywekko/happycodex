@@ -1,0 +1,27 @@
+#!/bin/bash
+# Build the HappyCodex agent container image
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+IMAGE_NAME="happycodex-agent"
+TAG="${1:-latest}"
+
+echo "Building HappyCodex agent container image..."
+echo "Image: ${IMAGE_NAME}:${TAG}"
+
+# Build with Docker (CACHEBUST avoids stale image layers during local rebuilds)
+docker build --build-arg CACHEBUST="$(date +%s)" -t "${IMAGE_NAME}:${TAG}" .
+
+echo ""
+echo "Build complete!"
+echo "Image: ${IMAGE_NAME}:${TAG}"
+
+# Touch sentinel so Makefile can detect stale image
+touch "$SCRIPT_DIR/../.docker-build-sentinel"
+
+echo ""
+echo "Test with:"
+echo "  echo '{\"prompt\":\"What is 2+2?\",\"groupFolder\":\"test\",\"chatJid\":\"test@g.us\",\"isMain\":false}' | docker run -i ${IMAGE_NAME}:${TAG}"

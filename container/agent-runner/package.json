@@ -1,0 +1,28 @@
+{
+  "name": "happycodex-agent-runner",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Container-side agent runner for HappyCodex",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.10.7",
+    "typescript": "^5.9.3"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wekko/happycodex.git",
+    "directory": "container/agent-runner"
+  },
+  "author": "HappyCodex contributors",
+  "keywords": [
+    "agent-runner",
+    "codex",
+    "happycodex"
+  ]
+}

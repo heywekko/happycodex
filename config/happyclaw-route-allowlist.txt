@@ -1,0 +1,43 @@
+# HappyClaw route-surface allowlist.
+#
+# Used by `npm run check:happyclaw-baseline` when HAPPYCLAW_REF points at a
+# local HappyClaw checkout. This file documents the narrow API/route deltas
+# allowed while HappyCodex inherits HappyClaw's product shell.
+
+[happycodex-only]
+src/routes/config.ts GET /codex/status
+src/routes/config.ts GET /codex/browser-auth/:loginId
+src/routes/config.ts GET /codex/device-auth/:loginId
+src/routes/config.ts POST /codex/browser-auth/:loginId/cancel
+src/routes/config.ts POST /codex/browser-auth/start
+src/routes/config.ts POST /codex/device-auth/:loginId/cancel
+src/routes/config.ts POST /codex/device-auth/start
+src/routes/config.ts POST /codex/logout
+src/routes/config.ts PUT /codex/api-key
+src/routes/config.ts PUT /codex/settings
+
+[happyclaw-only]
+src/routes/agent-definitions.ts DELETE /:id
+src/routes/agent-definitions.ts GET /
+src/routes/agent-definitions.ts GET /:id
+src/routes/agent-definitions.ts POST /
+src/routes/agent-definitions.ts PUT /:id
+src/routes/config.ts GET /claude
+src/routes/config.ts DELETE /claude/providers/:id
+src/routes/config.ts GET /claude/providers
+src/routes/config.ts GET /claude/providers/:id/usage
+src/routes/config.ts GET /claude/providers/health
+src/routes/config.ts GET /external-resources
+src/routes/config.ts GET /external-resources/rule
+src/routes/config.ts PATCH /claude/providers/:id
+src/routes/config.ts POST /claude/apply
+src/routes/config.ts POST /claude/oauth/callback
+src/routes/config.ts POST /claude/oauth/start
+src/routes/config.ts POST /claude/providers
+src/routes/config.ts POST /claude/providers/:id/reset-health
+src/routes/config.ts POST /claude/providers/:id/toggle
+src/routes/config.ts PUT /claude/balancing
+src/routes/config.ts PUT /claude/custom-env
+src/routes/config.ts PUT /claude/providers/:id/secrets
+src/routes/monitor.ts POST /status/groups/:folder/switch-provider
+src/web.ts ROUTE /api/agent-definitions agentDefinitionsRoutes

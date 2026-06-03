@@ -1,0 +1,95 @@
+#!/bin/bash
+set -e
+
+# Set permissive umask so files created by the container (node user, uid 1000)
+# are writable by the host backend (agent user, uid 1002).
+# Without this, the host cannot delete/modify files created by the container.
+umask 0000
+
+# Fix ownership on mounted volumes.
+# Host uid may differ from container node user (uid 1000), especially in
+# rootless podman where uid remapping causes EACCES on bind mounts.
+# Running as root here so chown works regardless of host uid.
+chown -R node:node /home/node/.claude 2>/dev/null || true
+chown -R node:node /home/node/.codex 2>/dev/null || true
+chown -R node:node /home/node/.feishu-cli 2>/dev/null || true
+chown -R node:node /workspace/group /workspace/global /workspace/memory /workspace/ipc 2>/dev/null || true
+
+# Mark mounted directories as safe for git (CVE-2022-24765 ownership check).
+# Host uid may differ from container node user, causing git to refuse operations.
+# 使用通配符 '*' 因为挂载路径动态（extra mounts、customCwd），无法枚举具体目录。
+git config --global --add safe.directory '*' 2>/dev/null || true
+
+# Source environment variables from mounted env file
+if [ -f /workspace/env-dir/env ]; then
+  set -a
+  source /workspace/env-dir/env
+  set +a
+fi
+
+# Prepend agent-runner 的本地 node_modules/.bin 到 PATH，优先使用镜像内安装的运行器工具。
+export PATH="/app/node_modules/.bin:${PATH}"
+
+export CODEX_HOME=/home/node/.codex
+
+# Persist Agent's `npm install -g <pkg>` to per-user mounted extra dir.
+# 容器是 docker run --rm 模式，每次结束销毁。如果 Agent 在容器里跑
+# `npm install -g lark-cli`、`@fanfanv5/feishu-cli`、各类 MCP server 包等，
+# 默认会装到镜像内层 /usr/local/lib/node_modules，下次新容器又得重装。
+# 把 npm prefix 指向已挂载的 /workspace/extra/.npm-global（host 端
+# data/extra/{folder}/.npm-global/，per-user 隔离）即可让全局包持久化。
+NPM_GLOBAL_DIR=/workspace/extra/.npm-global
+mkdir -p "$NPM_GLOBAL_DIR/bin" "$NPM_GLOBAL_DIR/lib"
+chown -R node:node "$NPM_GLOBAL_DIR" 2>/dev/null || true
+# 写到 node user 的 ~/.npmrc 让 npm 全局命令默认走该 prefix。
+# 镜像每次启动重置 /home/node，所以 entrypoint 每次都重写一遍是稳妥做法。
+cat > /home/node/.npmrc <<EOF
+prefix=$NPM_GLOBAL_DIR
+EOF
+chown node:node /home/node/.npmrc 2>/dev/null || true
+# 注意：append 而非 prepend，避免持久化的 npm shim 屏蔽 /app/node_modules/.bin 中的运行器工具。
+export PATH="$PATH:$NPM_GLOBAL_DIR/bin"
+
+# Discover and link skills (builtin → project → user, higher priority overwrites)
+# Only remove entries that conflict with mounted skills (non-symlink with same name),
+# preserving any skills the agent created directly in .claude/skills/.
+mkdir -p /home/node/.claude/skills
+for dir in /opt/builtin-skills /workspace/external-skills /workspace/project-skills /workspace/user-skills; do
+  if [ -d "$dir" ]; then
+    for skill in "$dir"/*/; do
+      if [ -d "$skill" ]; then
+        name=$(basename "$skill")
+        target="/home/node/.claude/skills/$name"
+        # Remove conflicting non-symlink entry (e.g. real directory from a failed agent edit)
+        if [ -e "$target" ] && [ ! -L "$target" ]; then
+          rm -rf "$target" 2>/dev/null || true
+        fi
+        ln -sfn "$skill" "$target" 2>/dev/null || true
+      fi
+    done
+  fi
+done
+chown -R node:node /home/node/.claude/skills 2>/dev/null || true
+
+# Compile TypeScript (agent-runner source may be hot-mounted from host)
+cd /app && npx tsc --outDir /tmp/dist 2>&1 >&2
+ln -s /app/node_modules /tmp/dist/node_modules
+ln -s /app/prompts /tmp/prompts
+chmod -R a-w /tmp/dist
+
+# Buffer stdin to file (container requires EOF to flush stdin pipe)
+cat > /tmp/input.json
+chmod 644 /tmp/input.json
+
+# Fix permissions on exit: runtime CLIs may create files with mode 0600,
+# which the host backend (agent user) cannot read.
+# The trap runs as root after the node process exits.
+cleanup() {
+  chmod -R a+rwX /home/node/.claude 2>/dev/null || true
+  chmod -R a+rwX /home/node/.codex 2>/dev/null || true
+  chmod -R a+rwX /workspace/group 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# Drop privileges and execute agent-runner as node user
+runuser -u node -- node /tmp/dist/index.js < /tmp/input.json
