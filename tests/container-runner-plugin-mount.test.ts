@@ -10,6 +10,10 @@ import os from 'os';
 import path from 'path';
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import type {
+  CloseHandlerContext,
+  StdoutParserState,
+} from '../src/agent-output-parser.js';
 
 // Several src modules (runtime-config.ts, etc.) capture DATA_DIR at module
 // load via top-level `path.join(DATA_DIR, ...)`. We need a real path *before*
@@ -53,11 +57,14 @@ vi.mock('../src/logger.js', () => ({
 }));
 
 const containerRunner = await import('../src/container-runner.js');
+const agentOutputParser = await import('../src/agent-output-parser.js');
 const catalog = await import('../src/plugin-catalog.js');
 const utils = await import('../src/plugin-utils.js');
 const materializer = await import('../src/plugin-materializer.js');
 
 const { buildVolumeMounts, prepareHostPlugins } = containerRunner;
+const { createStderrState, createStdoutParserState, handleTimeoutClose } =
+  agentOutputParser;
 const { writeCatalogIndex, getCatalogSnapshotDir } = catalog;
 const { CONTAINER_PLUGINS_PATH } = utils;
 const { getUserRuntimeRoot, getUserPluginRuntimeDir } = materializer;
@@ -119,6 +126,41 @@ function fakeGroup(folder: string, ownerId: string) {
     created_by: ownerId,
     is_home: false,
   };
+}
+
+function waitForSettledOutput(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+function createTimeoutContext(stdoutState: StdoutParserState): {
+  ctx: CloseHandlerContext;
+  resolved: {
+    current?: Parameters<CloseHandlerContext['resolvePromise']>[0];
+  };
+} {
+  const logsRoot = path.join(tmpDataDir, 'parser-logs');
+  fs.mkdirSync(logsRoot, { recursive: true });
+  const logsDir = fs.mkdtempSync(path.join(logsRoot, 'run-'));
+  const resolved: {
+    current?: Parameters<CloseHandlerContext['resolvePromise']>[0];
+  } = {};
+  const ctx: CloseHandlerContext = {
+    groupName: 'group-a',
+    label: 'Container',
+    filePrefix: 'container',
+    identifier: 'container-a',
+    logsDir,
+    input: { prompt: 'hello', sessionId: 'session-a', isMain: false },
+    stdoutState,
+    stderrState: createStderrState(),
+    onOutput: async () => {},
+    resolvePromise: (output) => {
+      resolved.current = output;
+    },
+    startTime: Date.now(),
+    timeoutMs: 1800000,
+  };
+  return { ctx, resolved };
 }
 
 beforeEach(() => {
@@ -423,5 +465,36 @@ describe('prepareHostPlugins — host-mode pre-spawn materialize', () => {
     // a no-op in this case (returns empty report) and loadUserPlugins returns
     // []. The function must not throw.
     expect(prepareHostPlugins(USER)).toEqual([]);
+  });
+});
+
+describe('container runner timeout lifecycle', () => {
+  test('treats timeout after successful output as success', async () => {
+    const stdoutState = createStdoutParserState();
+    stdoutState.hasSuccessOutput = true;
+    stdoutState.newSessionId = 'session-new';
+    const { ctx, resolved } = createTimeoutContext(stdoutState);
+
+    expect(handleTimeoutClose(ctx, 137, 1800001, true)).toBe(true);
+    await waitForSettledOutput();
+
+    expect(resolved.current).toEqual({
+      status: 'success',
+      result: null,
+      newSessionId: 'session-new',
+    });
+  });
+
+  test('keeps timeout before any output as an error', () => {
+    const stdoutState = createStdoutParserState();
+    const { ctx, resolved } = createTimeoutContext(stdoutState);
+
+    expect(handleTimeoutClose(ctx, 137, 1800001, true)).toBe(true);
+
+    expect(resolved.current).toEqual({
+      status: 'error',
+      result: null,
+      error: 'Container timed out after 1800000ms',
+    });
   });
 });

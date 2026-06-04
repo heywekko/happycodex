@@ -231,6 +231,39 @@ export function handleTimeoutClose(
 ): boolean {
   if (!timedOut) return false;
 
+  const { newSessionId, outputChain } = ctx.stdoutState;
+  const hadSettledOutput =
+    ctx.stdoutState.hasSuccessOutput ||
+    ctx.stdoutState.hasClosedOutput ||
+    ctx.stdoutState.hasInterruptedOutput;
+
+  if (ctx.onOutput && hadSettledOutput) {
+    const logFile = writeRunLog(ctx, code, duration);
+    const finalStatus = ctx.stdoutState.hasClosedOutput
+      ? ('closed' as const)
+      : ('success' as const);
+    logger.info(
+      {
+        group: ctx.groupName,
+        code,
+        duration,
+        newSessionId,
+        finalStatus,
+        logFile,
+      },
+      `${ctx.label} timed out after settled output (treating as ${finalStatus})`,
+    );
+    waitForOutputChain(
+      outputChain,
+      ctx.groupName,
+      `${ctx.filePrefix} timeout-after-output path`,
+      () => {
+        ctx.resolvePromise({ status: finalStatus, result: null, newSessionId });
+      },
+    );
+    return true;
+  }
+
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
   fs.mkdirSync(ctx.logsDir, { recursive: true });
   const timeoutLog = path.join(ctx.logsDir, `${ctx.filePrefix}-${ts}.log`);
