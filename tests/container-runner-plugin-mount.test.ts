@@ -251,15 +251,35 @@ describe('buildVolumeMounts — inherited plugin runtime mount', () => {
     const codexMount = mounts.find(
       (m) => m.containerPath === '/home/node/.codex',
     );
+    const mainCodexMount = mounts.find(
+      (m) => m.containerPath === '/workspace/codex-main-home',
+    );
+    const authLockMount = mounts.find(
+      (m) => m.containerPath === '/workspace/codex-auth-lock',
+    );
 
     expect(codexMount).toEqual({
       hostPath: path.join(tmpDataDir, 'sessions', 'grp-x', '.codex'),
       containerPath: '/home/node/.codex',
       readonly: false,
     });
+    expect(mainCodexMount).toEqual({
+      hostPath: path.join(tmpDataDir, 'sessions', 'main', '.codex'),
+      containerPath: '/workspace/codex-main-home',
+      readonly: false,
+    });
+    expect(authLockMount).toEqual({
+      hostPath: path.join(tmpDataDir, 'codex-auth-lock'),
+      containerPath: '/workspace/codex-auth-lock',
+      readonly: false,
+    });
     expect(
       fs.existsSync(path.join(tmpDataDir, 'sessions', 'grp-x', '.codex')),
     ).toBe(true);
+    expect(
+      fs.existsSync(path.join(tmpDataDir, 'sessions', 'main', '.codex')),
+    ).toBe(true);
+    expect(fs.existsSync(path.join(tmpDataDir, 'codex-auth-lock'))).toBe(true);
     expect(
       fs.readFileSync(
         path.join(tmpDataDir, 'sessions', 'grp-x', '.codex', 'config.toml'),

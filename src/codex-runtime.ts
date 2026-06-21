@@ -221,6 +221,23 @@ function copyRuntimeFileIfMissing(
   return true;
 }
 
+function copyRuntimeFile(sourcePath: string, targetPath: string): boolean {
+  if (!fs.existsSync(sourcePath)) return false;
+  const source = fs.readFileSync(sourcePath);
+  if (fs.existsSync(targetPath)) {
+    const target = fs.readFileSync(targetPath);
+    if (source.equals(target)) return false;
+  }
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true, mode: 0o700 });
+  fs.copyFileSync(sourcePath, targetPath);
+  try {
+    fs.chmodSync(targetPath, 0o600);
+  } catch {
+    /* chmod is best-effort on filesystems that do not preserve modes. */
+  }
+  return true;
+}
+
 export function materializeCodexRuntimeCredentials(
   groupFolder = 'main',
 ): CodexRuntimeCredentialMaterialization {
@@ -234,7 +251,7 @@ export function materializeCodexRuntimeCredentials(
   const sourceHome = getCodexRuntimeHome('main');
 
   const result = {
-    authCopied: copyRuntimeFileIfMissing(
+    authCopied: copyRuntimeFile(
       path.join(sourceHome, 'auth.json'),
       path.join(targetHome, 'auth.json'),
     ),
@@ -259,7 +276,7 @@ export function materializeCodexRuntimeCredentialsToHome(
   }
 
   const result = {
-    authCopied: copyRuntimeFileIfMissing(
+    authCopied: copyRuntimeFile(
       path.join(sourceHome, 'auth.json'),
       path.join(targetHome, 'auth.json'),
     ),

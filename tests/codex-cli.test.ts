@@ -205,6 +205,70 @@ describe('Codex CLI adapter', () => {
     ]);
   });
 
+  test('syncs shared Codex auth before and after exec', async () => {
+    const mainHome = path.join(tmpRoot, 'main-codex-home');
+    const workspaceHome = path.join(tmpRoot, 'workspace-codex-home');
+    const lockRoot = path.join(tmpRoot, 'codex-auth-lock');
+    const refreshCodexPath = path.join(tmpRoot, 'fake-refresh-codex.js');
+
+    fs.mkdirSync(mainHome, { recursive: true });
+    fs.mkdirSync(workspaceHome, { recursive: true });
+    fs.writeFileSync(
+      path.join(mainHome, 'auth.json'),
+      '{"source":"main"}\n',
+    );
+    fs.writeFileSync(
+      path.join(workspaceHome, 'auth.json'),
+      '{"source":"stale-workspace"}\n',
+    );
+    fs.writeFileSync(
+      refreshCodexPath,
+      `#!/usr/bin/env node
+const fs = require('fs');
+const path = require('path');
+const home = process.env.CODEX_HOME;
+const authPath = path.join(home, 'auth.json');
+const auth = JSON.parse(fs.readFileSync(authPath, 'utf8'));
+if (auth.source !== 'main') {
+  console.error('expected main auth before exec, got ' + auth.source);
+  process.exit(12);
+}
+const args = process.argv.slice(2);
+const outputFlag = args.indexOf('--output-last-message');
+if (outputFlag >= 0) {
+  fs.writeFileSync(args[outputFlag + 1], 'ok\\n');
+}
+fs.writeFileSync(authPath, JSON.stringify({ source: 'refreshed' }) + '\\n');
+console.log(JSON.stringify({ type: 'thread.started', thread_id: 'thread-auth' }));
+console.log(JSON.stringify({ type: 'turn.completed' }));
+`,
+      { mode: 0o755 },
+    );
+
+    const result = await runCodexExec({
+      codexBin: refreshCodexPath,
+      prompt: 'hello',
+      cwd: tmpRoot,
+      codexHome: workspaceHome,
+      env: {
+        HAPPYCODEX_MAIN_CODEX_HOME: mainHome,
+        HAPPYCODEX_CODEX_AUTH_LOCK_DIR: lockRoot,
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.threadId).toBe('thread-auth');
+    expect(fs.readFileSync(path.join(workspaceHome, 'auth.json'), 'utf8')).toBe(
+      '{"source":"refreshed"}\n',
+    );
+    expect(fs.readFileSync(path.join(mainHome, 'auth.json'), 'utf8')).toBe(
+      '{"source":"refreshed"}\n',
+    );
+    expect(
+      fs.existsSync(path.join(lockRoot, 'codex-auth.lock')),
+    ).toBe(false);
+  });
+
   test('runs Codex resume with the existing session id', async () => {
     const result = await runCodexExec({
       codexBin: fakeCodexPath,

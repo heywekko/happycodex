@@ -42,6 +42,7 @@ import {
 } from './runtime-context-resolver.js';
 import { syncCodexMcpConfig } from './codex-mcp-config.js';
 import {
+  getCodexRuntimeHome,
   getCodexRuntimeSettings,
   materializeCodexRuntimeCredentialsToHome,
 } from './codex-runtime.js';
@@ -109,6 +110,13 @@ interface VolumeMount {
   hostPath: string;
   containerPath: string;
   readonly: boolean;
+}
+
+const CONTAINER_MAIN_CODEX_HOME = '/workspace/codex-main-home';
+const CONTAINER_CODEX_AUTH_LOCK_DIR = '/workspace/codex-auth-lock';
+
+function getCodexAuthLockDir(): string {
+  return path.join(DATA_DIR, 'codex-auth-lock');
 }
 
 /**
@@ -281,6 +289,22 @@ export function buildVolumeMounts(
   mounts.push({
     hostPath: groupCodexHome,
     containerPath: '/home/node/.codex',
+    readonly: false,
+  });
+
+  const mainCodexHome = getCodexRuntimeHome('main');
+  mkdirForContainer(mainCodexHome);
+  mounts.push({
+    hostPath: mainCodexHome,
+    containerPath: CONTAINER_MAIN_CODEX_HOME,
+    readonly: false,
+  });
+
+  const codexAuthLockDir = getCodexAuthLockDir();
+  mkdirForContainer(codexAuthLockDir);
+  mounts.push({
+    hostPath: codexAuthLockDir,
+    containerPath: CONTAINER_CODEX_AUTH_LOCK_DIR,
     readonly: false,
   });
 
@@ -499,6 +523,11 @@ function buildContainerArgs(
   args.push('-e', `TZ=${tz}`);
   args.push('-e', 'HAPPYCODEX_AGENT_RUNTIME=codex');
   args.push('-e', 'CODEX_HOME=/home/node/.codex');
+  args.push('-e', `HAPPYCODEX_MAIN_CODEX_HOME=${CONTAINER_MAIN_CODEX_HOME}`);
+  args.push(
+    '-e',
+    `HAPPYCODEX_CODEX_AUTH_LOCK_DIR=${CONTAINER_CODEX_AUTH_LOCK_DIR}`,
+  );
   args.push('-e', `CODEX_MODEL=${codexSettings.model}`);
   args.push(
     '-e',
@@ -1050,8 +1079,14 @@ export async function runHostAgent(
   const codexSettings = getCodexRuntimeSettings();
   hostEnv['HAPPYCODEX_AGENT_RUNTIME'] = 'codex';
   hostEnv['CODEX_HOME'] = groupCodexHome;
+  hostEnv['HAPPYCODEX_MAIN_CODEX_HOME'] = getCodexRuntimeHome('main');
+  hostEnv['HAPPYCODEX_CODEX_AUTH_LOCK_DIR'] = getCodexAuthLockDir();
   hostEnv['CODEX_MODEL'] = codexSettings.model;
   hostEnv['CODEX_MODEL_REASONING_EFFORT'] = codexSettings.reasoningEffort;
+  fs.mkdirSync(hostEnv['HAPPYCODEX_MAIN_CODEX_HOME'], { recursive: true });
+  fs.mkdirSync(hostEnv['HAPPYCODEX_CODEX_AUTH_LOCK_DIR'], {
+    recursive: true,
+  });
 
   try {
     const containerOverride = getContainerEnvConfig(group.folder);

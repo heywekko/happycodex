@@ -250,7 +250,7 @@ describe('Codex runtime isolation', () => {
     ).toContain('cli_auth_credentials_store = "file"');
   });
 
-  test('materializes service-managed credentials without overwriting workspace auth', () => {
+  test('materializes service-managed credentials over stale workspace auth', () => {
     fs.mkdirSync(mainRuntimeHome, { recursive: true });
     fs.writeFileSync(
       path.join(mainRuntimeHome, 'auth.json'),
@@ -280,9 +280,9 @@ describe('Codex runtime isolation', () => {
 
     fs.writeFileSync(path.join(runtimeHome, 'auth.json'), '{"source":"own"}\n');
     const second = materializeCodexRuntimeCredentials(groupFolder);
-    expect(second).toEqual({ authCopied: false, configCopied: false });
+    expect(second).toEqual({ authCopied: true, configCopied: false });
     expect(fs.readFileSync(path.join(runtimeHome, 'auth.json'), 'utf8')).toBe(
-      '{"source":"own"}\n',
+      '{"source":"main"}\n',
     );
   });
 
