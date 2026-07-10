@@ -10,9 +10,10 @@ import { DATA_DIR } from './config.js';
 const CODEX_COMMAND_TIMEOUT_MS = 15_000;
 const DEVICE_AUTH_PROMPT_TIMEOUT_MS = 15_000;
 const DEVICE_AUTH_DEFAULT_EXPIRES_MS = 15 * 60 * 1000;
-const DEFAULT_CODEX_MODEL = 'gpt-5.5';
-const DEFAULT_CODEX_REASONING_EFFORT = 'xhigh';
+const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol';
+const DEFAULT_CODEX_REASONING_EFFORT = 'medium';
 export const CODEX_MODEL_PRESETS = [
+  'gpt-5.6-sol',
   'gpt-5.5',
   'gpt-5.4',
   'gpt-5.4-mini',

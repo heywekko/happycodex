@@ -41,8 +41,8 @@ export function CodexRuntimeSection({
     null,
   );
   const [apiKey, setApiKey] = useState('');
-  const [model, setModel] = useState('gpt-5.5');
-  const [reasoningEffort, setReasoningEffort] = useState('xhigh');
+  const [model, setModel] = useState('gpt-5.6-sol');
+  const [reasoningEffort, setReasoningEffort] = useState('medium');
   const [loading, setLoading] = useState(true);
   const [startingBrowserAuth, setStartingBrowserAuth] = useState(false);
   const [cancellingBrowserAuth, setCancellingBrowserAuth] = useState(false);
@@ -83,8 +83,8 @@ export function CodexRuntimeSection({
 
   useEffect(() => {
     if (!status) return;
-    setModel(status.model || 'gpt-5.5');
-    setReasoningEffort(status.reasoningEffort || 'xhigh');
+    setModel(status.model || 'gpt-5.6-sol');
+    setReasoningEffort(status.reasoningEffort || 'medium');
   }, [status]);
 
   useEffect(() => {
@@ -328,6 +328,7 @@ export function CodexRuntimeSection({
     new Set(
       [
         ...(status?.modelPresets ?? [
+          'gpt-5.6-sol',
           'gpt-5.5',
           'gpt-5.4',
           'gpt-5.4-mini',
@@ -383,8 +384,8 @@ export function CodexRuntimeSection({
               </div>
             )}
             <div className="mt-1 text-xs text-muted-foreground">
-              模型：{status?.model ?? 'gpt-5.5'} · 推理强度：
-              {status?.reasoningEffort ?? 'xhigh'}
+              模型：{status?.model ?? 'gpt-5.6-sol'} · 推理强度：
+              {status?.reasoningEffort ?? 'medium'}
             </div>
           </div>
           <Button

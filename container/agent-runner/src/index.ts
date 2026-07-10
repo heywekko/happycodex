@@ -48,11 +48,11 @@ const WORKSPACE_GROUP =
   process.env.HAPPYCLAW_WORKSPACE_GROUP || '/workspace/group';
 const WORKSPACE_IPC = process.env.HAPPYCLAW_WORKSPACE_IPC || '/workspace/ipc';
 
-const CODEX_MODEL = process.env.CODEX_MODEL?.trim() || 'gpt-5.5';
+const CODEX_MODEL = process.env.CODEX_MODEL?.trim() || 'gpt-5.6-sol';
 const CODEX_REASONING_EFFORT =
   process.env.CODEX_MODEL_REASONING_EFFORT?.trim() ||
   process.env.CODEX_REASONING_EFFORT?.trim() ||
-  'xhigh';
+  'medium';
 
 const IPC_INPUT_DIR = path.join(WORKSPACE_IPC, 'input');
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
