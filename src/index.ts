@@ -20,7 +20,7 @@ import {
 } from './config.js';
 import { detectImageMimeType } from './image-detector.js';
 import { interruptibleSleep } from './message-notifier.js';
-import { summarizeAgentError } from './agent-error.js';
+import { isCodexModelConfigurationError, summarizeAgentError } from './agent-error.js';
 import {
   deliverPendingReply,
   PENDING_REPLY_PREFIX,
@@ -4077,6 +4077,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     // close handler adds a short stderr tail. Prefer the structured error so
     // classification and diagnostics keep the real root cause.
     const errorDetail = lastError || output.error || '未知错误';
+    if (isCodexModelConfigurationError(errorDetail)) {
+      queue.markRetryExhausted(chatJid);
+    }
 
     // 上下文溢出错误：跳过重试，提交游标，通知用户
     if (errorDetail.startsWith('context_overflow:')) {

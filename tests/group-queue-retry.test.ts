@@ -34,6 +34,22 @@ describe('GroupQueue bounded retries', () => {
     vi.useRealTimers();
   });
 
+  test('an explicit configuration rejection stops after the first failed request', async () => {
+    const queue = new GroupQueue();
+    const processMessages = vi.fn(async () => {
+      queue.markRetryExhausted(JID);
+      return false;
+    });
+    const onExhausted = vi.fn();
+    queue.setProcessMessagesFn(processMessages);
+    queue.setOnMaxRetriesExceeded(onExhausted);
+    queue.enqueueMessageCheck(JID);
+    await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+    expect(processMessages).toHaveBeenCalledTimes(1);
+    expect(onExhausted).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   test('polling respects backoff and exhaustion without consuming pending messages', async () => {
     const queue = new GroupQueue();
     const processMessages = vi.fn(async () => false);

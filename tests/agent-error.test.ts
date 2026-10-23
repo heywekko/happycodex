@@ -1,15 +1,28 @@
 import { describe, expect, test } from 'vitest';
 
-import { summarizeAgentError } from '../src/agent-error.js';
+import {
+  isCodexModelConfigurationError,
+  summarizeAgentError,
+} from '../src/agent-error.js';
 
 describe('summarizeAgentError', () => {
+  test('does not retry an explicitly unsupported Codex model as a network error', () => {
+    expect(
+      isCodexModelConfigurationError(
+        "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.",
+      ),
+    ).toBe(true);
+    expect(isCodexModelConfigurationError('tls handshake eof')).toBe(false);
+  });
   test('turns verbose TLS failures into a short recoverable notice', () => {
     expect(
       summarizeAgentError(
         'ERROR responses_websocket: failed to connect: tls handshake eof\n' +
           'at runCodexQuery (file:///tmp/dist/index.js:741:19)',
       ),
-    ).toBe('Codex 网络连接失败，将有限重试；持续失败后保留消息并停止自动重试。');
+    ).toBe(
+      'Codex 网络连接失败，将有限重试；持续失败后保留消息并停止自动重试。',
+    );
   });
 
   test('bounds unknown error text to one short line', () => {

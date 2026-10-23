@@ -159,6 +159,11 @@ export class GroupQueue {
     );
   }
 
+  /** Explicit provider configuration rejection cannot recover by repeating the request. */
+  markRetryExhausted(groupJid: string): void {
+    this.getGroup(groupJid).retryCount = MAX_RETRIES;
+  }
+
   private clearRetryTimer(state: GroupState): void {
     if (state.retryTimer !== null) {
       clearTimeout(state.retryTimer);

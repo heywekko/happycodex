@@ -1,3 +1,9 @@
+export function isCodexModelConfigurationError(error: string): boolean {
+  return error.includes(
+    'not supported when using Codex with a ChatGPT account',
+  );
+}
+
 export function summarizeAgentError(error: string): string {
   const normalized = error.toLowerCase();
   if (

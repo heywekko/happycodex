@@ -113,7 +113,9 @@ COPY agent-runner/package.json ./
 # (COPY caches on file content hash, which blocks ARG invalidation propagation)
 ARG CACHEBUST=1
 RUN npm install -g agent-browser
-RUN npm install -g @openai/codex
+ARG CODEX_VERSION=0.163.0
+RUN npm install -g "@openai/codex@${CODEX_VERSION}" \
+    && test "$(codex --version)" = "codex-cli ${CODEX_VERSION}"
 RUN npm install
 
 # Install feishu-cli (binary + builtin skills), 始终跟踪 latest release。
