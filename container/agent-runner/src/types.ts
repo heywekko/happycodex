@@ -18,6 +18,8 @@ export interface ContainerInput {
    * Used by per-channel MCP tools (discord_*, etc.) to identify the current
    * incoming chat. Undefined when chatJid already encodes the IM source. */
   currentSourceJid?: string;
+  /** Leave any later IPC inputs for host delivery/recovery before another query. */
+  stopAfterReply?: boolean;
   /** @deprecated Use isHome + isAdminHome instead. Kept for backward compatibility with older host processes. */
   isMain?: boolean;
   /** Whether this is the user's home container (admin or member). */

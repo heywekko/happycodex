@@ -43,6 +43,7 @@ const DEFAULT_LONGPOLL_TIMEOUT_MS = 35000;
 
 const RECONNECT_MIN_DELAY_MS = 3000;
 const RECONNECT_MAX_DELAY_MS = 60000;
+const POLL_FAILURES_UNHEALTHY_THRESHOLD = 3;
 
 const IMAGE_MAX_BASE64_SIZE = 5 * 1024 * 1024; // 5 MB for inline base64
 
@@ -75,6 +76,11 @@ export interface WeChatConnectionConfig {
   baseUrl?: string;
   cdnBaseUrl?: string;
   getUpdatesBuf?: string;
+  contextTokens?: Record<string, string>;
+  onStateChange?: (state: {
+    getUpdatesBuf: string;
+    contextTokens: Record<string, string>;
+  }) => void | Promise<void>;
 }
 
 export interface WeChatConnectOpts {
@@ -223,10 +229,13 @@ export function createWeChatConnection(
   let longpollTimeoutMs = DEFAULT_LONGPOLL_TIMEOUT_MS;
   let stopping = false;
   let connected = false;
+  let consecutivePollFailures = 0;
   let cancelSleep: (() => void) | null = null;
 
   // context_token cache: from_user_id -> latest context_token
-  const contextTokenCache = new Map<string, string>();
+  const contextTokenCache = new Map<string, string>(
+    Object.entries(config.contextTokens ?? {}),
+  );
 
   // Known JIDs — skip redundant storeChatMetadata/onNewChat for repeat messages
   const knownJids = new Set<string>();
@@ -549,14 +558,27 @@ export function createWeChatConnection(
       if (isDuplicate(key)) return;
       markSeen(key);
 
+      // Cache and persist the reply token before the stale-message gate. On
+      // restart, replayed updates must refresh delivery state even though the
+      // historical message itself should not be stored again.
+      if (msg.context_token) {
+        contextTokenCache.set(fromUserId, msg.context_token);
+        try {
+          await config.onStateChange?.({
+            getUpdatesBuf: currentGetUpdatesBuf,
+            contextTokens: Object.fromEntries(contextTokenCache),
+          });
+        } catch (err) {
+          logger.warn(
+            { err, userId: fromUserId },
+            'Failed to persist WeChat runtime state',
+          );
+        }
+      }
+
       // Skip stale messages — if no timestamp available, skip as well (can't verify freshness)
       if (opts.ignoreMessagesBefore) {
         if (!msg.create_time_ms || msg.create_time_ms < opts.ignoreMessagesBefore) return;
-      }
-
-      // Cache context_token for replies
-      if (msg.context_token) {
-        contextTokenCache.set(fromUserId, msg.context_token);
       }
 
       const jid = `wechat:${fromUserId}`;
@@ -732,6 +754,10 @@ export function createWeChatConnection(
 
         // ret is absent (undefined) when the request succeeds — treat as 0
         if (response.ret !== undefined && response.ret !== 0) {
+          consecutivePollFailures++;
+          if (consecutivePollFailures >= POLL_FAILURES_UNHEALTHY_THRESHOLD) {
+            connected = false;
+          }
           logger.warn(
             `WeChat getUpdates error: ret=${response.ret}, response=${JSON.stringify(response).slice(0, 500)}`,
           );
@@ -742,6 +768,11 @@ export function createWeChatConnection(
         }
 
         // Reset backoff on success
+        if (!connected) {
+          logger.info('WeChat poll connection recovered');
+        }
+        connected = true;
+        consecutivePollFailures = 0;
         reconnectDelay = RECONNECT_MIN_DELAY_MS;
 
         // Update cursor
@@ -765,6 +796,10 @@ export function createWeChatConnection(
           continue;
         }
 
+        consecutivePollFailures++;
+        if (consecutivePollFailures >= POLL_FAILURES_UNHEALTHY_THRESHOLD) {
+          connected = false;
+        }
         logger.error({ err }, 'WeChat poll loop error');
         await sleep(reconnectDelay);
         reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_DELAY_MS);
@@ -793,8 +828,14 @@ export function createWeChatConnection(
 
       stopping = false;
       connected = true;
+      consecutivePollFailures = 0;
       msgCache.clear();
       contextTokenCache.clear();
+      for (const [userId, token] of Object.entries(
+        config.contextTokens ?? {},
+      )) {
+        contextTokenCache.set(userId, token);
+      }
       knownJids.clear();
 
       logger.info(
@@ -836,11 +877,9 @@ export function createWeChatConnection(
 
       const contextToken = contextTokenCache.get(userId);
       if (!contextToken) {
-        logger.warn(
-          { chatId },
-          'No context_token available for WeChat user, cannot send message',
+        throw new Error(
+          'No context_token available; cannot send WeChat message',
         );
-        return;
       }
 
       try {
@@ -869,11 +908,7 @@ export function createWeChatConnection(
 
       const contextToken = contextTokenCache.get(userId);
       if (!contextToken) {
-        logger.warn(
-          { chatId },
-          'No context_token for WeChat user, cannot send image',
-        );
-        return;
+        throw new Error('No context_token available; cannot send WeChat image');
       }
 
       if (imageBuffer.length > MAX_FILE_SIZE) {
@@ -966,11 +1001,7 @@ export function createWeChatConnection(
 
       const contextToken = contextTokenCache.get(userId);
       if (!contextToken) {
-        logger.warn(
-          { chatId },
-          'No context_token for WeChat user, cannot send file',
-        );
-        return;
+        throw new Error('No context_token available; cannot send WeChat file');
       }
 
       // Single readFile + size check, then pass buffer to uploadMediaBuffer —

@@ -601,7 +601,7 @@ async function handleWebUserMessage(
         'Race: eager-expanded but runner exited before sendMessage; cold-start will re-expand (inline may run twice)',
       );
     }
-    deps.queue.enqueueMessageCheck(chatJid);
+    deps.queue.enqueueMessageCheck(chatJid, { resetRetries: true });
   }
 
   // Only advance per-group cursor when we piped directly into a running container.

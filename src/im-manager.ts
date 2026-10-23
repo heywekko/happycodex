@@ -40,7 +40,10 @@ import { rm } from 'fs/promises';
 import { DATA_DIR } from './config.js';
 import type { StreamingSession } from './im-channel.js';
 import { getRegisteredGroup, getJidsByFolder } from './db.js';
-import { getUserDingTalkConfig } from './runtime-config.js';
+import {
+  getUserDingTalkConfig,
+  updateUserWeChatRuntimeState,
+} from './runtime-config.js';
 import { logger } from './logger.js';
 import type { FeishuMessageMeta } from './types.js';
 
@@ -73,6 +76,7 @@ export interface WeChatConnectConfig {
   baseUrl?: string;
   cdnBaseUrl?: string;
   getUpdatesBuf?: string;
+  contextTokens?: Record<string, string>;
   enabled?: boolean;
 }
 
@@ -601,6 +605,8 @@ class IMConnectionManager {
       baseUrl: config.baseUrl,
       cdnBaseUrl: config.cdnBaseUrl,
       getUpdatesBuf: config.getUpdatesBuf,
+      contextTokens: config.contextTokens,
+      onStateChange: (state) => updateUserWeChatRuntimeState(userId, state),
     });
 
     return this.connectChannel(userId, 'wechat', channel, {

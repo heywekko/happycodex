@@ -603,11 +603,7 @@ export function createWeChatChannel(config: WeChatConnectionConfig): IMChannel {
 
     async sendMessage(chatId: string, text: string): Promise<void> {
       if (!inner) {
-        logger.warn(
-          { chatId },
-          'WeChat channel not connected, skip sending message',
-        );
-        return;
+        throw new Error(`WeChat channel is not connected for ${chatId}`);
       }
       await inner.sendMessage(chatId, text);
     },
@@ -620,11 +616,7 @@ export function createWeChatChannel(config: WeChatConnectionConfig): IMChannel {
       fileName?: string,
     ): Promise<void> {
       if (!inner) {
-        logger.warn(
-          { chatId },
-          'WeChat channel not connected, skip sending image',
-        );
-        return;
+        throw new Error(`WeChat channel is not connected for ${chatId}`);
       }
       await inner.sendImage(chatId, imageBuffer, mimeType, caption, fileName);
     },
@@ -635,11 +627,7 @@ export function createWeChatChannel(config: WeChatConnectionConfig): IMChannel {
       fileName: string,
     ): Promise<void> {
       if (!inner) {
-        logger.warn(
-          { chatId },
-          'WeChat channel not connected, skip sending file',
-        );
-        return;
+        throw new Error(`WeChat channel is not connected for ${chatId}`);
       }
       await inner.sendFile(chatId, filePath, fileName);
     },

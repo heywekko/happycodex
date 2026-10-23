@@ -20,6 +20,14 @@ import {
 } from './config.js';
 import { detectImageMimeType } from './image-detector.js';
 import { interruptibleSleep } from './message-notifier.js';
+import { summarizeAgentError } from './agent-error.js';
+import {
+  deliverPendingReply,
+  PENDING_REPLY_PREFIX,
+  readPendingReply,
+  queuePendingReply,
+  type PendingReply,
+} from './reply-recovery.js';
 import {
   AvailableGroup,
   ContainerInput,
@@ -2337,8 +2345,12 @@ async function setTyping(jid: string, isTyping: boolean): Promise<void> {
 }
 
 interface SendMessageOptions {
+  /** Stable identity when retrying delivery of an already generated answer. */
+  messageId?: string;
   /** Whether to forward the reply to the IM channel (Feishu/Telegram). Defaults to true for IM JIDs. */
   sendToIM?: boolean;
+  /** Fail the caller after persistence when the IM delivery could not be confirmed. */
+  requireImDelivery?: boolean;
   /** Pre-computed local image paths to attach to IM messages. Avoids redundant filesystem scans. */
   localImagePaths?: string[];
   /** Message source identifier (e.g. 'scheduled_task') for frontend routing. */
@@ -2809,6 +2821,28 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const resolved = resolveEffectiveGroup(group);
   let effectiveGroup = resolved.effectiveGroup;
   let isHome = resolved.isHome;
+
+  const pendingReply = readPendingReply(replyRecoveryStore, chatJid);
+  if (pendingReply) {
+    if ((effectiveGroup.created_by && !checkOwnerActive(getUserById(effectiveGroup.created_by)).allowed) ||
+        (pendingReply.ownerId && pendingReply.ownerId !== effectiveGroup.created_by) ||
+        (pendingReply.groupFolder && pendingReply.groupFolder !== effectiveGroup.folder)) {
+      logger.error({ chatJid }, 'Pending IM reply retained because its runtime owner is unavailable or changed');
+      return true;
+    }
+    const outcome = await deliverPendingReply(replyRecoveryStore, chatJid, {
+      send: (reply) => resendPersistedReply(chatJid, reply),
+      commit: (cursor) => commitRecoveredReplyCursor(chatJid, cursor),
+      hasNewInput: getMessagesSince(chatJid, pendingReply.cursor).length > 0,
+    });
+    if (outcome === 'retry' || outcome === 'blocked') {
+      logger.error(
+        { chatJid, outcome, error: readPendingReply(replyRecoveryStore, chatJid)?.error },
+        'Generated reply retained; model execution skipped while IM delivery is pending',
+      );
+      return outcome === 'blocked';
+    }
+  }
 
   // Get all messages since last agent interaction
   const sinceCursor = lastAgentTimestamp[chatJid] || EMPTY_CURSOR;
@@ -3660,8 +3694,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                   ? undefined // no turnId → fresh INSERT, no UPSERT dedup
                   : effectiveTurnId;
 
-              lastReplyMsgId = await sendMessage(chatJid, text, {
+              const replyOptions: SendMessageOptions = {
                 sendToIM: directImReply && !skipImSend,
+                requireImDelivery: directImReply && !skipImSend,
                 localImagePaths,
                 messageMeta: {
                   turnId: turnIdForDb,
@@ -3670,7 +3705,37 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                   sourceKind: result.sourceKind || 'sdk_final',
                   finalizationReason: result.finalizationReason || 'completed',
                 },
-              });
+              };
+              if (replyOptions.requireImDelivery) {
+                const pending: PendingReply = {
+                  ownerId: effectiveGroup.created_by,
+                  groupFolder: effectiveGroup.folder,
+                  messageId: crypto.randomUUID(),
+                  cursor: { timestamp: lastProcessed.timestamp, id: lastProcessed.id },
+                  text,
+                  localImagePaths,
+                  messageMeta: replyOptions.messageMeta,
+                  attempts: 0,
+                  status: 'pending',
+                };
+                queuePendingReply(replyRecoveryStore, chatJid, pending);
+                const outcome = await deliverPendingReply(replyRecoveryStore, chatJid, {
+                  send: async (reply) => {
+                    await resendPersistedReply(chatJid, reply);
+                    lastReplyMsgId = reply.messageId;
+                  },
+                  commit: (cursor) => {
+                    commitRecoveredReplyCursor(chatJid, cursor);
+                    cursorCommitted = true;
+                  },
+                });
+                if (outcome !== 'delivered') {
+                  throw new Error(readPendingReply(replyRecoveryStore, chatJid)?.error ||
+                    'Generated reply is waiting for IM delivery');
+                }
+              } else {
+                lastReplyMsgId = await sendMessage(chatJid, text, replyOptions);
+              }
               lastSavedTurnId = effectiveTurnId;
 
               // For routed IM (web JID with IM source), only send the FIRST
@@ -3726,6 +3791,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         } catch (err) {
           logger.error({ group: group.name, err }, 'onOutput callback failed');
           hadError = true;
+          lastError = err instanceof Error ? err.message : String(err);
+          if (readPendingReply(replyRecoveryStore, chatJid)) {
+            queue.closeStdin(chatJid);
+          }
         }
       },
       imagesForAgent,
@@ -4004,7 +4073,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     // replied successfully, a subsequent timeout is not a real error and
     // rolling back would cause the same messages to be re-processed,
     // leading to duplicate replies.
-    const errorDetail = output.error || lastError || '未知错误';
+    // The runner emits the complete structured error before the outer process
+    // close handler adds a short stderr tail. Prefer the structured error so
+    // classification and diagnostics keep the real root cause.
+    const errorDetail = lastError || output.error || '未知错误';
 
     // 上下文溢出错误：跳过重试，提交游标，通知用户
     if (errorDetail.startsWith('context_overflow:')) {
@@ -4081,7 +4153,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       deleteRouterState(`oom_exits:${effectiveGroup.folder}`);
     }
 
-    sendSystemMessage(chatJid, 'agent_error', errorDetail);
+    sendSystemMessage(chatJid, 'agent_error', summarizeAgentError(errorDetail));
     logger.warn(
       { group: group.name, error: errorDetail },
       'Agent error (no reply sent), keeping cursor at previous position for retry',
@@ -4292,6 +4364,7 @@ async function runAgent(
           groupFolder: group.folder,
           chatJid,
           currentSourceJid,
+          stopAfterReply: getChannelType(chatJid) !== null,
           isMain: isAdminHome,
           isHome,
           isAdminHome,
@@ -4312,6 +4385,7 @@ async function runAgent(
           groupFolder: group.folder,
           chatJid,
           currentSourceJid,
+          stopAfterReply: getChannelType(chatJid) !== null,
           isMain: isAdminHome,
           isHome,
           isAdminHome,
@@ -4369,20 +4443,10 @@ async function sendMessage(
 ): Promise<string | undefined> {
   const isIMChannel = getChannelType(jid) !== null;
   const sendToIM = options.sendToIM ?? isIMChannel;
+  let requiredImDeliveryError: Error | undefined;
   try {
-    if (sendToIM && isIMChannel) {
-      try {
-        const localImagePaths =
-          options.localImagePaths ??
-          extractLocalImImagePaths(text, resolveEffectiveFolder(jid));
-        await imManager.sendMessage(jid, text, localImagePaths);
-      } catch (err) {
-        logger.error({ jid, err }, 'Failed to send message to IM channel');
-      }
-    }
-
     // Persist assistant reply so Web polling can render it and clear waiting state.
-    const msgId = crypto.randomUUID();
+    const msgId = options.messageId ?? crypto.randomUUID();
     const timestamp = new Date().toISOString();
     ensureChatExists(jid);
     const persistedMsgId = storeMessageDirect(
@@ -4415,7 +4479,29 @@ async function sendMessage(
       undefined,
       options.source,
     );
-    logger.info({ jid, length: text.length, sendToIM }, 'Message sent');
+    if (sendToIM && isIMChannel) {
+      const localImagePaths =
+        options.localImagePaths ??
+        extractLocalImImagePaths(text, resolveEffectiveFolder(jid));
+      if (options.requireImDelivery) {
+        const delivered = await retryImOperation('agent_reply', jid, () =>
+          imManager.sendMessage(jid, text, localImagePaths),
+        );
+        if (!delivered) {
+          requiredImDeliveryError = new Error(
+            'Agent reply could not be delivered to the IM channel',
+          );
+        }
+      } else {
+        try {
+          await imManager.sendMessage(jid, text, localImagePaths);
+        } catch (err) {
+          logger.error({ jid, err }, 'Failed to send message to IM channel');
+        }
+      }
+    }
+
+    logger.info({ jid, length: text.length, sendToIM }, 'Assistant reply persisted');
     // Skip agent_reply broadcast for scheduled tasks to avoid clearing
     // streaming state of a concurrently running main agent.
     // Safe because scheduled tasks never trigger typing indicators, so there's
@@ -4423,11 +4509,40 @@ async function sendMessage(
     if (!options.source) {
       broadcastToWebClients(jid, text);
     }
+    if (requiredImDeliveryError) throw requiredImDeliveryError;
     return persistedMsgId;
   } catch (err) {
     logger.error({ jid, err }, 'Failed to send message');
+    if (options.requireImDelivery) throw err;
     return undefined;
   }
+}
+
+const replyRecoveryStore = {
+  get: getRouterState,
+  set: setRouterState,
+  remove: deleteRouterState,
+};
+
+function commitRecoveredReplyCursor(jid: string, covered: MessageCursor): void {
+  const committed = lastCommittedCursor[jid];
+  const target = committed && isCursorAfter(committed, covered) ? committed : covered;
+  // next-pull may include unconsumed IPC inputs; only covered/committed inputs count.
+  lastCommittedCursor[jid] = target;
+  lastAgentTimestamp[jid] = { ...target };
+  saveState();
+}
+
+async function resendPersistedReply(jid: string, reply: PendingReply): Promise<void> {
+  const messageId = await sendMessage(jid, reply.text, {
+    messageId: reply.messageId,
+    sendToIM: true,
+    requireImDelivery: true,
+    localImagePaths: reply.localImagePaths,
+    messageMeta: reply.messageMeta,
+  });
+  if (!messageId) throw new Error('Generated reply could not be persisted');
+  reply.messageId = messageId;
 }
 
 export function buildInterruptedReply(
@@ -7128,9 +7243,10 @@ async function startMessageLoop(): Promise<void> {
               timestamp: lastProcessed.timestamp,
               id: lastProcessed.id,
             });
+            queue.markIpcInjectedMessage(chatJid);
           } else {
             // no_active — enqueue for a new one
-            queue.enqueueMessageCheck(chatJid);
+            queue.enqueueMessageCheck(chatJid, { resetRetries: true });
           }
         }
       }
@@ -7234,6 +7350,10 @@ async function recoverStuckPendingGroups(): Promise<void> {
  */
 function recoverPendingMessages(): void {
   for (const [chatJid, group] of Object.entries(registeredGroups)) {
+    if (getRouterState(PENDING_REPLY_PREFIX + chatJid)) {
+      queue.enqueueMessageCheck(chatJid);
+      continue;
+    }
     // No committed cursor → this group was never successfully processed.
     // Skip recovery — the normal 2s message loop will pick up any pending messages.
     // Using EMPTY_CURSOR here would match ALL historical messages and falsely
@@ -7243,6 +7363,11 @@ function recoverPendingMessages(): void {
 
     const pending = getMessagesSince(chatJid, sinceCursor);
     if (pending.length > 0) {
+      // The next-pull cursor may already have advanced when a message was
+      // injected into a warm runner. Roll it back to the committed recovery
+      // anchor so processGroupMessages actually reads the pending rows again.
+      lastAgentTimestamp[chatJid] = { ...sinceCursor };
+
       // Clear stale session to avoid "session ghost" — the agent will start
       // a fresh conversation and process the pending messages cleanly.
       if (sessions[group.folder]) {
@@ -9136,6 +9261,7 @@ async function main(): Promise<void> {
             baseUrl: config.baseUrl,
             cdnBaseUrl: config.cdnBaseUrl,
             getUpdatesBuf: config.getUpdatesBuf,
+            contextTokens: config.contextTokens,
           },
           onNewChat,
           {
@@ -9436,11 +9562,13 @@ async function main(): Promise<void> {
   queue.setOnMaxRetriesExceeded((groupJid: string) => {
     const group = registeredGroups[groupJid];
     const name = group?.name || groupJid;
-    sendSystemMessage(
-      groupJid,
-      'agent_max_retries',
-      `${name} 处理失败，已达最大重试次数`,
-    );
+    const notice = `${name} 处理失败，自动重试已停止；原消息已保留，请检查错误后重试。`;
+    sendSystemMessage(groupJid, 'agent_max_retries', notice);
+    if (getChannelType(groupJid)) {
+      retryImOperation('background_retry_notice', groupJid, () =>
+        imManager.sendMessage(groupJid, notice),
+      ).catch(() => {});
+    }
     setTyping(groupJid, false);
   });
   // Billing: user-level concurrent container limit
@@ -9684,6 +9812,7 @@ async function main(): Promise<void> {
           baseUrl: userWeChat.baseUrl,
           cdnBaseUrl: userWeChat.cdnBaseUrl,
           getUpdatesBuf: userWeChat.getUpdatesBuf,
+          contextTokens: userWeChat.contextTokens,
           enabled: userWeChat.enabled,
         };
       }

@@ -984,6 +984,7 @@ export interface UserWeChatConfig {
   baseUrl?: string; // 默认 https://ilinkai.weixin.qq.com
   cdnBaseUrl?: string; // 默认 https://novac2c.cdn.weixin.qq.com/c2c
   getUpdatesBuf?: string; // 长轮询游标
+  contextTokens?: Record<string, string>; // user_id -> reply context_token
   bypassProxy?: boolean; // 直连模式：绕过 HTTP 代理（默认 true）
   enabled?: boolean;
   updatedAt: string | null;
@@ -1003,6 +1004,7 @@ interface StoredWeChatProviderConfigV1 {
 
 interface WeChatSecretPayload {
   botToken: string;
+  contextTokens?: Record<string, string>;
 }
 
 export function getUserWeChatConfig(userId: string): UserWeChatConfig | null {
@@ -1021,6 +1023,7 @@ export function getUserWeChatConfig(userId: string): UserWeChatConfig | null {
       baseUrl: stored.baseUrl,
       cdnBaseUrl: stored.cdnBaseUrl,
       getUpdatesBuf: stored.getUpdatesBuf,
+      contextTokens: secret.contextTokens,
       bypassProxy: stored.bypassProxy ?? true, // 默认直连
       enabled: stored.enabled,
       updatedAt: stored.updatedAt || null,
@@ -1041,6 +1044,7 @@ export function saveUserWeChatConfig(
     baseUrl: next.baseUrl?.trim() || undefined,
     cdnBaseUrl: next.cdnBaseUrl?.trim() || undefined,
     getUpdatesBuf: next.getUpdatesBuf,
+    contextTokens: next.contextTokens,
     bypassProxy: next.bypassProxy ?? true,
     enabled: next.enabled,
     updatedAt: new Date().toISOString(),
@@ -1057,6 +1061,7 @@ export function saveUserWeChatConfig(
     updatedAt: normalized.updatedAt || new Date().toISOString(),
     secret: encryptChannelSecret<WeChatSecretPayload>({
       botToken: normalized.botToken,
+      contextTokens: normalized.contextTokens,
     }),
   };
 
@@ -1067,6 +1072,27 @@ export function saveUserWeChatConfig(
   fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
   fs.renameSync(tmp, filePath);
   return normalized;
+}
+
+export function updateUserWeChatRuntimeState(
+  userId: string,
+  state: {
+    getUpdatesBuf?: string;
+    contextTokens?: Record<string, string>;
+  },
+): void {
+  const current = getUserWeChatConfig(userId);
+  if (!current) return;
+  saveUserWeChatConfig(userId, {
+    botToken: current.botToken,
+    ilinkBotId: current.ilinkBotId,
+    baseUrl: current.baseUrl,
+    cdnBaseUrl: current.cdnBaseUrl,
+    getUpdatesBuf: state.getUpdatesBuf ?? current.getUpdatesBuf,
+    contextTokens: state.contextTokens ?? current.contextTokens,
+    bypassProxy: current.bypassProxy,
+    enabled: current.enabled,
+  });
 }
 
 // ========== WhatsApp User IM Config ==========

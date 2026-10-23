@@ -181,9 +181,10 @@ describe('Codex runtime isolation', () => {
 
   test('persists model and reasoning settings for isolated runtime runs', () => {
     const defaults = getCodexRuntimeSettings();
-    expect(defaults.model).toBe('gpt-5.6-sol');
+    expect(defaults.model).toBe('gpt-6.1-sol');
     expect(defaults.reasoningEffort).toBe('medium');
-    expect(CODEX_MODEL_PRESETS[0]).toBe('gpt-5.6-sol');
+    expect(CODEX_MODEL_PRESETS[0]).toBe('gpt-6.1-sol');
+    expect(CODEX_MODEL_PRESETS).toContain('gpt-6-sol');
 
     const saved = saveCodexRuntimeSettings({
       model: 'gpt-5.4-mini',
@@ -230,7 +231,7 @@ describe('Codex runtime isolation', () => {
     expect(initial.runtimeHomeRelative).toBe(
       'data/sessions/codex-runtime-test/.codex',
     );
-    expect(initial.model).toBe('gpt-5.6-sol');
+    expect(initial.model).toBe('gpt-6.1-sol');
     expect(initial.reasoningEffort).toBe('medium');
     expect(
       fs.readFileSync(path.join(runtimeHome, 'config.toml'), 'utf8'),
@@ -401,7 +402,7 @@ describe('Codex runtime setup UI', () => {
     expect(source).toContain('reasoningEffort');
     expect(source).toContain('模型');
     expect(source).toContain('const modelOptions = Array.from');
-    expect(source).toContain("useState('gpt-5.6-sol')");
+    expect(source).toContain("useState('gpt-6.1-sol')");
     expect(source).toContain("useState('medium')");
     expect(source).not.toContain('list="codex-model-presets"');
 
@@ -409,7 +410,7 @@ describe('Codex runtime setup UI', () => {
       path.join(process.cwd(), 'container/agent-runner/src/index.ts'),
       'utf8',
     );
-    expect(runnerSource).toContain("|| 'gpt-5.6-sol'");
+    expect(runnerSource).toContain("|| 'gpt-6.1-sol'");
     expect(runnerSource).toContain("||\n  'medium'");
   });
 });

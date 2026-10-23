@@ -70,6 +70,8 @@ export interface ContainerInput {
    * Used by per-channel MCP tools (discord_*, etc.) to identify the current
    * incoming chat. Undefined when chatJid already encodes the IM source. */
   currentSourceJid?: string;
+  /** Direct IM replies finish one input batch before host delivery/recovery. */
+  stopAfterReply?: boolean;
   /** @deprecated Use isHome + isAdminHome instead */
   isMain: boolean;
   turnId?: string;

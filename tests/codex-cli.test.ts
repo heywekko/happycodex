@@ -5,6 +5,7 @@ import path from 'node:path';
 
 import {
   buildCodexExecArgs,
+  extractCodexEventError,
   isCodexContextOverflowError,
   isCodexResumeSessionMissingError,
   parseCodexJsonlLine,
@@ -158,6 +159,18 @@ describe('Codex CLI adapter', () => {
     expect(parseCodexJsonlLine('')).toBeNull();
   });
 
+  test('extracts the latest Codex JSONL error', () => {
+    expect(
+      extractCodexEventError([
+        { type: 'error', message: 'connection failed' },
+        { type: 'turn.failed', error: { message: 'final failure' } },
+      ]),
+    ).toBe('final failure');
+    expect(
+      extractCodexEventError([{ type: 'turn.completed' }]),
+    ).toBeUndefined();
+  });
+
   test('resolves user-level Codex install when service PATH omits it', () => {
     const previousHome = process.env.HOME;
     const previousPath = process.env.PATH;
@@ -267,6 +280,100 @@ console.log(JSON.stringify({ type: 'turn.completed' }));
     expect(
       fs.existsSync(path.join(lockRoot, 'codex-auth.lock')),
     ).toBe(false);
+  });
+
+  test('times out a stuck Codex exec and releases the shared auth lock', async () => {
+    const mainHome = path.join(tmpRoot, 'timeout-main-codex-home');
+    const workspaceHome = path.join(tmpRoot, 'timeout-workspace-codex-home');
+    const lockRoot = path.join(tmpRoot, 'timeout-codex-auth-lock');
+    const hangingCodexPath = path.join(tmpRoot, 'fake-hanging-codex.js');
+
+    fs.mkdirSync(mainHome, { recursive: true });
+    fs.writeFileSync(path.join(mainHome, 'auth.json'), '{"source":"main"}\n');
+    fs.writeFileSync(
+      hangingCodexPath,
+      '#!/usr/bin/env node\nprocess.stdin.resume(); setInterval(() => {}, 1000);\n',
+      { mode: 0o755 },
+    );
+
+    await expect(
+      runCodexExec({
+        codexBin: hangingCodexPath,
+        prompt: 'hang',
+        cwd: tmpRoot,
+        codexHome: workspaceHome,
+        timeoutMs: 50,
+        env: {
+          HAPPYCODEX_MAIN_CODEX_HOME: mainHome,
+          HAPPYCODEX_CODEX_AUTH_LOCK_DIR: lockRoot,
+        },
+      }),
+    ).rejects.toThrow('Codex exec timed out');
+    expect(fs.existsSync(path.join(lockRoot, 'codex-auth.lock'))).toBe(false);
+  });
+
+  test('heartbeats a live auth lock so concurrent execs stay serialized', async () => {
+    const mainHome = path.join(tmpRoot, 'heartbeat-main-codex-home');
+    const firstHome = path.join(tmpRoot, 'heartbeat-first-codex-home');
+    const secondHome = path.join(tmpRoot, 'heartbeat-second-codex-home');
+    const lockRoot = path.join(tmpRoot, 'heartbeat-codex-auth-lock');
+    const eventLog = path.join(tmpRoot, 'heartbeat-events.log');
+    const slowCodexPath = path.join(tmpRoot, 'fake-slow-codex.js');
+
+    fs.mkdirSync(mainHome, { recursive: true });
+    fs.writeFileSync(path.join(mainHome, 'auth.json'), '{"source":"main"}\n');
+    fs.writeFileSync(
+      slowCodexPath,
+      `#!/usr/bin/env node
+const fs = require('fs');
+const args = process.argv.slice(2);
+const outputFlag = args.indexOf('--output-last-message');
+let prompt = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', chunk => { prompt += chunk; });
+process.stdin.on('end', () => {
+  const name = prompt.trim();
+  fs.appendFileSync(process.env.EVENT_LOG, 'start:' + name + '\\n');
+  setTimeout(() => {
+    fs.appendFileSync(process.env.EVENT_LOG, 'end:' + name + '\\n');
+    fs.writeFileSync(args[outputFlag + 1], name + '\\n');
+    console.log(JSON.stringify({ type: 'thread.started', thread_id: name }));
+    console.log(JSON.stringify({ type: 'turn.completed' }));
+  }, 400);
+});
+`,
+      { mode: 0o755 },
+    );
+
+    const sharedEnv = {
+      HAPPYCODEX_MAIN_CODEX_HOME: mainHome,
+      HAPPYCODEX_CODEX_AUTH_LOCK_DIR: lockRoot,
+      HAPPYCODEX_CODEX_AUTH_LOCK_STALE_MS: '60',
+      EVENT_LOG: eventLog,
+    };
+    const first = runCodexExec({
+      codexBin: slowCodexPath,
+      prompt: 'first',
+      cwd: tmpRoot,
+      codexHome: firstHome,
+      env: sharedEnv,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const second = runCodexExec({
+      codexBin: slowCodexPath,
+      prompt: 'second',
+      cwd: tmpRoot,
+      codexHome: secondHome,
+      env: sharedEnv,
+    });
+
+    await Promise.all([first, second]);
+    expect(fs.readFileSync(eventLog, 'utf8').trim().split('\n')).toEqual([
+      'start:first',
+      'end:first',
+      'start:second',
+      'end:second',
+    ]);
   });
 
   test('runs Codex resume with the existing session id', async () => {

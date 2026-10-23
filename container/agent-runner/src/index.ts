@@ -30,6 +30,7 @@ import type { RuntimeContextAudit } from './stream-event.types.js';
 export type { StreamEventType, StreamEvent } from './types.js';
 
 import {
+  extractCodexEventError,
   isCodexContextOverflowError,
   isCodexResumeSessionMissingError,
   runCodexExec,
@@ -48,11 +49,20 @@ const WORKSPACE_GROUP =
   process.env.HAPPYCLAW_WORKSPACE_GROUP || '/workspace/group';
 const WORKSPACE_IPC = process.env.HAPPYCLAW_WORKSPACE_IPC || '/workspace/ipc';
 
-const CODEX_MODEL = process.env.CODEX_MODEL?.trim() || 'gpt-5.6-sol';
+const CODEX_MODEL = process.env.CODEX_MODEL?.trim() || 'gpt-6.1-sol';
 const CODEX_REASONING_EFFORT =
   process.env.CODEX_MODEL_REASONING_EFFORT?.trim() ||
   process.env.CODEX_REASONING_EFFORT?.trim() ||
   'medium';
+const configuredCodexExecTimeoutMs = Number.parseInt(
+  process.env.HAPPYCODEX_CODEX_EXEC_TIMEOUT_MS || '',
+  10,
+);
+const CODEX_EXEC_TIMEOUT_MS =
+  Number.isFinite(configuredCodexExecTimeoutMs) &&
+  configuredCodexExecTimeoutMs > 0
+    ? configuredCodexExecTimeoutMs
+    : 25 * 60 * 1000;
 
 const IPC_INPUT_DIR = path.join(WORKSPACE_IPC, 'input');
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
@@ -882,6 +892,7 @@ async function runCodexQuery(
       sandbox: 'workspace-write',
       images: imageFiles.paths,
       writableRoots,
+      timeoutMs: CODEX_EXEC_TIMEOUT_MS,
       onEvent: (event) => {
         if (event.type === 'thread.started') {
           const threadId =
@@ -911,9 +922,12 @@ async function runCodexQuery(
     });
 
     newSessionId = result.threadId ?? newSessionId;
+    const eventError = extractCodexEventError(result.events);
     if (result.exitCode !== 0) {
       const detail =
-        result.stderr.trim() || `Codex exec failed (${result.exitCode})`;
+        eventError ||
+        result.stderr.trim() ||
+        `Codex exec failed (${result.exitCode})`;
       if (sessionId && isCodexResumeSessionMissingError(detail)) {
         throw new Error(`codex_resume_missing_session: ${detail}`);
       }
@@ -924,6 +938,11 @@ async function runCodexQuery(
         throw new Error(`${prefix}: ${detail}`);
       }
       throw new Error(detail);
+    }
+    if (!result.finalAnswer.trim()) {
+      throw new Error(
+        eventError || 'Codex exec completed without a final answer',
+      );
     }
 
     emit({
@@ -1131,6 +1150,11 @@ async function main(): Promise<void> {
 
       // Emit session update so host can track it
       writeOutput({ status: 'success', result: null, newSessionId: sessionId });
+
+      if (containerInput.stopAfterReply) {
+        log('IM input batch completed; leaving later inputs for host recovery');
+        break;
+      }
 
       log('Query ended, waiting for next IPC message...');
 

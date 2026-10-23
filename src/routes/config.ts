@@ -1726,6 +1726,7 @@ configRoutes.put('/user-im/wechat', authMiddleware, async (c) => {
     baseUrl: current?.baseUrl,
     cdnBaseUrl: current?.cdnBaseUrl,
     getUpdatesBuf: current?.getUpdatesBuf,
+    contextTokens: current?.contextTokens,
     bypassProxy: current?.bypassProxy ?? true,
     enabled: current?.enabled ?? false,
   };
@@ -1733,6 +1734,8 @@ configRoutes.put('/user-im/wechat', authMiddleware, async (c) => {
   if (validation.data.clearBotToken === true) {
     next.botToken = '';
     next.ilinkBotId = '';
+    next.getUpdatesBuf = undefined;
+    next.contextTokens = undefined;
   }
   if (typeof validation.data.enabled === 'boolean') {
     next.enabled = validation.data.enabled;
@@ -1918,7 +1921,8 @@ configRoutes.post('/user-im/wechat/disconnect', authMiddleware, async (c) => {
         botToken: '',
         ilinkBotId: '',
         enabled: false,
-        getUpdatesBuf: current.getUpdatesBuf,
+        getUpdatesBuf: undefined,
+        contextTokens: undefined,
       });
     }
 

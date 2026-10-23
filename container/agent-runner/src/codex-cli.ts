@@ -39,7 +39,8 @@ interface SpawnResult {
 
 const SHARED_CODEX_AUTH_LOCK_NAME = 'codex-auth.lock';
 const SHARED_CODEX_AUTH_LOCK_RETRY_MS = 250;
-const DEFAULT_SHARED_CODEX_AUTH_LOCK_STALE_MS = 2 * 60 * 60 * 1000;
+const DEFAULT_SHARED_CODEX_AUTH_LOCK_STALE_MS = 2 * 60 * 1000;
+const SHARED_CODEX_AUTH_LOCK_MAX_HEARTBEAT_MS = 30 * 1000;
 
 function isExecutable(filePath: string): boolean {
   try {
@@ -204,6 +205,33 @@ export function parseCodexJsonlLine(line: string): CodexJsonEvent | null {
   return parsed as CodexJsonEvent;
 }
 
+export function extractCodexEventError(
+  events: CodexJsonEvent[],
+): string | undefined {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (event.type !== 'error' && event.type !== 'turn.failed') continue;
+
+    if (typeof event.message === 'string' && event.message.trim()) {
+      return event.message.trim();
+    }
+    if (typeof event.error === 'string' && event.error.trim()) {
+      return event.error.trim();
+    }
+    if (
+      event.error &&
+      typeof event.error === 'object' &&
+      !Array.isArray(event.error)
+    ) {
+      const message = (event.error as Record<string, unknown>).message;
+      if (typeof message === 'string' && message.trim()) {
+        return message.trim();
+      }
+    }
+  }
+  return undefined;
+}
+
 export function isCodexContextOverflowError(stderr: string): boolean {
   const normalized = stderr.toLowerCase();
   return (
@@ -301,15 +329,58 @@ async function acquireSharedAuthLock(
   while (true) {
     try {
       await fs.mkdir(lockDir, { mode: 0o700 });
+      const ownerId =
+        `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       await fs.writeFile(
         path.join(lockDir, 'owner.json'),
         JSON.stringify({
+          ownerId,
           pid: process.pid,
           createdAt: new Date().toISOString(),
         }) + '\n',
         { mode: 0o600 },
       );
+
+      let released = false;
+      const heartbeatMs = Math.max(
+        10,
+        Math.min(
+          SHARED_CODEX_AUTH_LOCK_MAX_HEARTBEAT_MS,
+          Math.floor(staleMs / 3),
+        ),
+      );
+      const heartbeat = setInterval(() => {
+        void (async () => {
+          try {
+            const owner = JSON.parse(
+              await fs.readFile(path.join(lockDir, 'owner.json'), 'utf8'),
+            ) as { ownerId?: string };
+            if (owner.ownerId !== ownerId) {
+              clearInterval(heartbeat);
+              return;
+            }
+            const now = new Date();
+            await fs.utimes(lockDir, now, now);
+          } catch {
+            clearInterval(heartbeat);
+          }
+        })();
+      }, heartbeatMs);
+      heartbeat.unref();
+
       return async () => {
+        if (released) return;
+        released = true;
+        clearInterval(heartbeat);
+        try {
+          const owner = JSON.parse(
+            await fs.readFile(path.join(lockDir, 'owner.json'), 'utf8'),
+          ) as { ownerId?: string };
+          if (owner.ownerId !== ownerId) return;
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+          throw err;
+        }
         await fs.rm(lockDir, { recursive: true, force: true });
       };
     } catch (err) {

@@ -37,6 +37,8 @@ interface GroupState {
   taskRunId: string | null;
   retryCount: number;
   retryTimer: ReturnType<typeof setTimeout> | null;
+  /** Whether the user has already been notified that automatic retries stopped. */
+  retryExhaustedNotified: boolean;
   restarting: boolean;
   /** True when a _drain sentinel has been written for the current active runner. */
   drainSentinelWritten: boolean;
@@ -93,6 +95,7 @@ export class GroupQueue {
         taskRunId: null,
         retryCount: 0,
         retryTimer: null,
+        retryExhaustedNotified: false,
         restarting: false,
         drainSentinelWritten: false,
         hasIpcInjectedMessages: false,
@@ -162,6 +165,7 @@ export class GroupQueue {
       state.retryTimer = null;
     }
     state.retryCount = 0;
+    state.retryExhaustedNotified = false;
   }
 
   private isHostMode(groupJid: string): boolean {
@@ -299,7 +303,7 @@ export class GroupQueue {
 
   /**
    * Mark that a message was IPC-injected into the running agent.
-   * The caller (web.ts) has already advanced the per-group cursor for this
+   * The caller has already advanced the per-group cursor for this
    * message.  If the agent crashes without processing it, the close handler
    * uses this flag to force pendingMessages so drainGroup re-reads from DB.
    */
@@ -388,10 +392,22 @@ export class GroupQueue {
     return true;
   }
 
-  enqueueMessageCheck(groupJid: string): void {
+  enqueueMessageCheck(
+    groupJid: string,
+    options?: { resetRetries?: boolean },
+  ): void {
     if (this.shuttingDown) return;
 
     const state = this.getGroup(groupJid);
+    if (options?.resetRetries) {
+      this.clearRetryTimer(state);
+    }
+    // Polling the same unconsumed messages must respect both backoff and the
+    // retry limit. Only a new incoming message or explicit recovery can reset it.
+    if (state.retryTimer !== null || state.retryCount > MAX_RETRIES) {
+      state.pendingMessages = true;
+      return;
+    }
 
     const activeRunner = this.findActiveRunnerFor(groupJid);
     if (state.active || (activeRunner && activeRunner !== groupJid)) {
@@ -783,7 +799,6 @@ export class GroupQueue {
     }
   }
 
-
   /**
    * Force-stop a group's active container and clear queued work.
    * Returns a promise that resolves when the container has fully exited
@@ -978,7 +993,7 @@ export class GroupQueue {
 
       // Trigger a fresh container start
       logger.info({ groupJid: targetJid }, 'Restarting container');
-      this.enqueueMessageCheck(groupJid);
+      this.enqueueMessageCheck(groupJid, { resetRetries: true });
     } finally {
       state.restarting = false;
     }
@@ -989,6 +1004,10 @@ export class GroupQueue {
     reason: 'messages' | 'drain',
   ): Promise<void> {
     const state = this.getGroup(groupJid);
+    if (state.retryTimer !== null || state.retryCount > MAX_RETRIES) {
+      state.pendingMessages = true;
+      return;
+    }
     const isHostMode = this.isHostMode(groupJid);
     state.active = true;
     state.activeRunnerIsTask = false;
@@ -1023,7 +1042,6 @@ export class GroupQueue {
       if (this.processMessagesFn) {
         const success = await this.processMessagesFn(groupJid);
         if (success) {
-          state.retryCount = 0;
           // Defensive: clear any lingering retry timer from a previous failed
           // run that was superseded by a successful drain-triggered run.
           this.clearRetryTimer(state);
@@ -1177,6 +1195,9 @@ export class GroupQueue {
       clearTimeout(state.retryTimer);
       state.retryTimer = null;
     }
+    // Keep the original DB messages unconsumed, including when the retry
+    // budget is exhausted; a later user message can explicitly recover them.
+    state.pendingMessages = true;
 
     // 检查是否为上下文溢出错误，如果是则跳过重试
     if (this.contextOverflowGroups.has(groupJid)) {
@@ -1184,7 +1205,7 @@ export class GroupQueue {
         { groupJid },
         'Skipping retry for context overflow error (agent already retried 3 times)',
       );
-      state.retryCount = 0;
+      state.retryCount = MAX_RETRIES + 1;
       this.contextOverflowGroups.delete(groupJid); // 清除标记
       return;
     }
@@ -1193,17 +1214,21 @@ export class GroupQueue {
     if (state.retryCount > MAX_RETRIES) {
       logger.error(
         { groupJid, retryCount: state.retryCount },
-        'Max retries exceeded, dropping messages (will retry on next incoming message)',
+        'Max retries exceeded, retaining messages until new incoming message or explicit recovery',
       );
-      state.retryCount = 0;
-      try {
-        this.onMaxRetriesExceededFn?.(groupJid);
-      } catch (err) {
-        logger.error({ groupJid, err }, 'onMaxRetriesExceeded callback failed');
+      if (!state.retryExhaustedNotified) {
+        state.retryExhaustedNotified = true;
+        try {
+          this.onMaxRetriesExceededFn?.(groupJid);
+        } catch (err) {
+          logger.error(
+            { groupJid, err },
+            'onMaxRetriesExceeded callback failed',
+          );
+        }
       }
       return;
     }
-
     const delayMs = BASE_RETRY_MS * Math.pow(2, state.retryCount - 1);
     logger.info(
       { groupJid, retryCount: state.retryCount, delayMs },
@@ -1254,7 +1279,11 @@ export class GroupQueue {
     // When processMessagesFn() fails, both scheduleRetry() and drainGroup() fire.
     // Without this guard, drainGroup would start a new container while the retry
     // timer later starts another, causing duplicate processing of the same messages.
-    if (state.pendingMessages && !state.retryTimer) {
+    if (
+      state.pendingMessages &&
+      !state.retryTimer &&
+      state.retryCount <= MAX_RETRIES
+    ) {
       this.runForGroup(groupJid, 'drain');
       return;
     }
@@ -1299,12 +1328,20 @@ export class GroupQueue {
         }
         if (validTask) {
           this.runTask(jid, validTask);
-        } else if (state.pendingMessages && !state.retryTimer) {
+        } else if (
+          state.pendingMessages &&
+          !state.retryTimer &&
+          state.retryCount <= MAX_RETRIES
+        ) {
           // All tasks were stale, fall through to messages
           // (skip if retry timer is pending to avoid duplicate processing)
           this.runForGroup(jid, 'drain');
         }
-      } else if (state.pendingMessages && !state.retryTimer) {
+      } else if (
+        state.pendingMessages &&
+        !state.retryTimer &&
+        state.retryCount <= MAX_RETRIES
+      ) {
         // Skip if retry timer is pending to avoid duplicate processing
         this.runForGroup(jid, 'drain');
       }
